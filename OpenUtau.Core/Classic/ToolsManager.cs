@@ -33,15 +33,33 @@ namespace OpenUtau.Classic {
             }
         }
 
+        /// <summary>Checks whether a file is a native Linux ELF binary.</summary>
+        private static bool IsElfBinary(string filePath) {
+            try {
+                using var fs = File.OpenRead(filePath);
+                if (fs.Length < 4) return false;
+                Span<byte> magic = stackalloc byte[4];
+                fs.ReadExactly(magic);
+                return magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
+            } catch {
+                return false;
+            }
+        }
+
         IResampler LoadResampler(string filePath, string basePath) {
             if (!File.Exists(filePath)) {
                 return null;
             }
             string ext = Path.GetExtension(filePath).ToLower();
+            // Windows executables: load if on Windows, or if Wine is available on Linux
             if ((OS.IsWindows() || !string.IsNullOrEmpty(Preferences.Default.WinePath)) && (ext == ".exe" || ext == ".bat")) {
                 return new ExeResampler(filePath, basePath);
-            } 
+            }
+            // Native Linux: shell scripts (.sh) or ELF binaries (no extension, or detected by magic)
             if (!OS.IsWindows() && (ext == ".sh" || string.IsNullOrEmpty(ext))) {
+                if (string.IsNullOrEmpty(ext) && !IsElfBinary(filePath)) {
+                    return null; // skip non-ELF extensionless files (README, etc.)
+                }
                 return new ExeResampler(filePath, basePath);
             }
             return null;
@@ -52,10 +70,15 @@ namespace OpenUtau.Classic {
                 return null;
             }
             string ext = Path.GetExtension(filePath).ToLower();
+            // Windows executables: load if on Windows, or if Wine is available on Linux
             if ((OS.IsWindows() || !string.IsNullOrEmpty(Preferences.Default.WinePath)) && (ext == ".exe" || ext == ".bat")) {
                 return new ExeWavtool(filePath, basePath);
-            } 
+            }
+            // Native Linux: shell scripts (.sh) or ELF binaries (no extension, or detected by magic)
             if (!OS.IsWindows() && (ext == ".sh" || string.IsNullOrEmpty(ext))) {
+                if (string.IsNullOrEmpty(ext) && !IsElfBinary(filePath)) {
+                    return null; // skip non-ELF extensionless files
+                }
                 return new ExeWavtool(filePath, basePath);
             }
             return null;

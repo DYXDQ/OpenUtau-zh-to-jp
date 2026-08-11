@@ -345,3 +345,4 @@ Microsoft.AI.DirectML
 
 .example/**/target/
 
+.claude

@@ -340,8 +340,8 @@ appcast.*.xml
 *.tar.gz
 .vscode/
 Microsoft.AI.DirectML
+tmp/
 
 .example/
 
 .example/**/target/
-

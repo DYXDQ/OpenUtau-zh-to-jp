@@ -1,10 +1,12 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Text.RegularExpressions;
 using Classic;
 using OpenUtau.Api;
 using OpenUtau.Core.Ustx;
+using OpenUtau.Core;
 //using Serilog;
 
 namespace OpenUtau.Plugin.Builtin {
@@ -20,6 +22,11 @@ namespace OpenUtau.Plugin.Builtin {
 
         private USinger singer;
         private Presamp presamp;
+        private static int globalPresampGeneration = 0;
+        private int localPresampGeneration = 0;
+        private static PresampWatcher presampWatcher;
+        private static string currentlyWatchedPresampDir;
+
 
         // in case voicebank is missing certain symbols
         static readonly string[] substitution = new string[] {
@@ -38,16 +45,40 @@ namespace OpenUtau.Plugin.Builtin {
         }
 
         public override void SetSinger(USinger singer) {
-            if (this.singer == singer) {
+            bool generationChanged = this.localPresampGeneration != globalPresampGeneration;
+            if (this.singer == singer && !generationChanged) {
                 return;
             }
             this.singer = singer;
             if (this.singer == null) {
                 return;
             }
+            this.localPresampGeneration = globalPresampGeneration;
+            if (this.presamp == null || generationChanged) {
+                this.presamp = new Presamp();
+                this.presamp.ReadPresampIni(singer.Location, singer.TextFileEncoding);
+            }
+            SetupPresampWatcher(singer.Location);
+        }
 
-            presamp = new Presamp();
-            presamp.ReadPresampIni(singer.Location, singer.TextFileEncoding);
+        private void SetupPresampWatcher(string directory) {
+            if (string.IsNullOrEmpty(directory) || currentlyWatchedPresampDir == directory) {
+                return;
+            }
+            if (presampWatcher != null) {
+                presampWatcher.Dispose();
+                presampWatcher = null;
+            }
+            currentlyWatchedPresampDir = directory;
+            if (Directory.Exists(directory)) {
+                presampWatcher = new PresampWatcher(directory, () => {
+                    System.Threading.Thread.Sleep(200);
+                    globalPresampGeneration++;
+                    if (this.singer != null) {
+                        OpenUtau.Core.SingerManager.Inst.ScheduleReload(this.singer);
+                    }
+                });
+            }
         }
 
         public override Result Process(Note[] notes, Note? prev, Note? next, Note? prevNeighbour, Note? nextNeighbour, Note[] prevNeighbours) {
@@ -338,7 +369,14 @@ namespace OpenUtau.Plugin.Builtin {
             int shift = attr.toneShift ?? GetParentToneShift();
             int? alt = attr.alternate ?? GetParentAlternate();
 
-            var otos = FindOtos(input, note.tone + shift, color, alt);
+            var otos = new List<UOto>();
+            foreach (string test in input) {
+                if (singer.TryGetMappedOto(test + alt, note.tone + shift, color, out var otoAlt)) {
+                    otos.Add(otoAlt);
+                } else if (singer.TryGetMappedOto(test, note.tone + shift, color, out var otoCandidacy)) {
+                    otos.Add(otoCandidacy);
+                }
+            }
 
             if (otos.Count > 0) {
                 oto = otos.FirstOrDefault(oto => oto.IsColorMatch(color));
@@ -349,19 +387,6 @@ namespace OpenUtau.Plugin.Builtin {
             }
             return false;
         }
-
-        private List<UOto> FindOtos(List<string> input, int tone, string color, int? alt) {
-            var otos = new List<UOto>();
-            foreach (string test in input) {
-                if (alt != null && singer.TryGetMappedOto(test + alt, tone, color, out var otoAlt)) {
-                    otos.Add(otoAlt);
-                } else if (singer.TryGetMappedOto(test, tone, color, out var otoCandidacy)) {
-                    otos.Add(otoCandidacy);
-                }
-            }
-            return otos;
-        }
-
         private bool checkOtoUntilHit(List<string> input, Note note, int index, out UOto oto, out int? colorIndex) {
             oto = default;
             colorIndex = null;
@@ -371,7 +396,14 @@ namespace OpenUtau.Plugin.Builtin {
             int shift = attr.toneShift ?? attr0.toneShift ?? GetParentToneShift();
             int? alt = attr.alternate ?? GetParentAlternate();
 
-            var otos = FindOtos(input, note.tone + shift, color, alt);
+            var otos = new List<UOto>();
+            foreach (string test in input) {
+                if (singer.TryGetMappedOto(test + alt, note.tone + shift, color, out var otoAlt)) {
+                    otos.Add(otoAlt);
+                } else if (singer.TryGetMappedOto(test, note.tone + shift, color, out var otoCandidacy)) {
+                    otos.Add(otoCandidacy);
+                }
+            }
 
             if (otos.Count > 0) {
                 oto = otos.FirstOrDefault(oto => oto.IsColorMatch(color));

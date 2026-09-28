@@ -117,6 +117,10 @@ namespace OpenUtau.App.ViewModels {
         public ReactiveCommand<PitchPointHitInfo, RxVoid> PitAddCommand { get; set; }
 
         private ReactiveCommand<Classic.Plugin, RxVoid> legacyPluginCommand;
+        /// <summary>Track selected in the tracks panel, or -1 when none/several are selected.</summary>
+        private int selectedTrackNo = -1;
+        /// <summary>Track of the last part opened in the piano roll.</summary>
+        private int lastPartTrackNo = -1;
 
         public PianoRollViewModel() {
             NotesViewModel = new NotesViewModel();
@@ -188,24 +192,25 @@ namespace OpenUtau.App.ViewModels {
             });
 
             legacyPluginCommand = ReactiveCommand.Create<Classic.Plugin>(async plugin => {
-                if (NotesViewModel.Part == null || NotesViewModel.Part.notes.Count == 0) {
+                var project = NotesViewModel.Project;
+                var part = NotesViewModel.Part ?? CreateEmptyPartForPlugin(project);
+                if (part == null) {
                     return;
                 }
                 DocManager.Inst.ExecuteCmd(new LoadingNotification(typeof(PianoRoll), true, "legacy plugin"));
                 
                 try {
-                    var part = NotesViewModel.Part;
-                    UNote? first;
-                    UNote? last;
-                    if (NotesViewModel.Selection.IsEmpty) {
-                        first = part.notes.First();
-                        last = part.notes.Last();
-                    } else {
+                    // Pass the selected notes. Plugins with "notes=all" in plugin.txt, and
+                    // plugins run with nothing selected, receive the whole part instead.
+                    // An empty track is allowed: the plugin then runs with no notes.
+                    UNote? first = null;
+                    UNote? last = null;
+                    if (!NotesViewModel.Selection.IsEmpty) {
                         first = NotesViewModel.Selection.FirstOrDefault();
                         last = NotesViewModel.Selection.LastOrDefault();
                     }
                     var runner = PluginRunner.from(PathManager.Inst, DocManager.Inst);
-                    await runner.Execute(NotesViewModel.Project, part, first, last, plugin);
+                    await runner.Execute(project, part, first, last, plugin);
 
                 } catch (Exception e) {
                     DocManager.Inst.ExecuteCmd(new ErrorMessageNotification(e));
@@ -214,7 +219,43 @@ namespace OpenUtau.App.ViewModels {
                 }
             });
             LoadLegacyPlugins();
+            // Remember which track the piano roll is working on, so a legacy plugin can be
+            // run even after the last part of that track is removed (an empty track).
+            NotesViewModel.WhenAnyValue(vm => vm.Part)
+                .Subscribe(part => {
+                    if (part != null) {
+                        lastPartTrackNo = part.trackNo;
+                    }
+                });
+            MessageBus.Current.Listen<TrackSelectionEvent>()
+                .Subscribe(e => {
+                    selectedTrackNo = e.selectedTracks.Length == 1 ? e.selectedTracks[0].TrackNo : -1;
+                });
             DocManager.Inst.AddSubscriber(this);
+        }
+
+        /// <summary>
+        /// Legacy plugins may run on an empty track, which has no part (and no notes) to
+        /// write into. Create an empty part on the current track so the plugin has
+        /// somewhere to add notes. Returns null when no track can be determined.
+        /// </summary>
+        private UVoicePart? CreateEmptyPartForPlugin(UProject project) {
+            int trackNo = selectedTrackNo >= 0 ? selectedTrackNo : lastPartTrackNo;
+            if (trackNo < 0 || trackNo >= project.tracks.Count) {
+                return null;
+            }
+            int position = NotesViewModel.TickOrigin;
+            project.timeAxis.TickPosToBarBeat(position, out int bar, out int beat, out int remainingTicks);
+            var part = new UVoicePart() {
+                trackNo = trackNo,
+                position = position,
+                Duration = project.timeAxis.BarBeatToTickPos(bar + 4, beat) + remainingTicks - position,
+            };
+            DocManager.Inst.StartUndoGroup("command.part.add");
+            DocManager.Inst.ExecuteCmd(new AddPartCommand(project, part));
+            DocManager.Inst.EndUndoGroup();
+            DocManager.Inst.ExecuteCmd(new LoadPartNotification(part, project, position));
+            return part;
         }
 
         private void SetUndoState() {

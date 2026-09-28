@@ -343,32 +343,38 @@ namespace OpenUtau.Classic {
             return ustNotes;
         }
 
-        public static List<UNote> WritePlugin(UProject project, UVoicePart part, UNote first, UNote last, string filePath, string encoding = "shift_jis") {
-            var prev = first.Prev;
-            if (prev == null) {
-                if (first.position > 0) {
-                    prev = UNote.Create();
-                    prev.duration = first.position;
-                    prev.lyric = "R";
-                    prev.tone = 60;
-                }
-            } else if (first.position > prev.End) {
-                prev = UNote.Create();
-                prev.duration = first.position - prev.End;
-                prev.lyric = "R";
-                prev.tone = 60;
-            }
-            var next = last.Next;
-            if (next != null && next.position > last.End) {
-                next = UNote.Create();
-                next.duration = next.position - last.End;
-                next.lyric = "R";
-                next.tone = 60;
-            }
+        public static List<UNote> WritePlugin(UProject project, UVoicePart part, UNote? first, UNote? last, string filePath, string encoding = "shift_jis") {
             var sequence = new List<UNote>();
             var track = project.tracks[part.trackNo];
             using (var writer = new StreamWriter(filePath, false, Encoding.GetEncoding(encoding))) {
                 WriteHeader(project, part, writer);
+                if (first == null || last == null) {
+                    // No notes to send: either the part is empty, or the plugin only
+                    // receives selected notes and nothing is selected. The plugin is
+                    // still run, so it can add notes (e.g. on an empty track).
+                    return sequence;
+                }
+                var prev = first.Prev;
+                if (prev == null) {
+                    if (first.position > 0) {
+                        prev = UNote.Create();
+                        prev.duration = first.position;
+                        prev.lyric = "R";
+                        prev.tone = 60;
+                    }
+                } else if (first.position > prev.End) {
+                    prev = UNote.Create();
+                    prev.duration = first.position - prev.End;
+                    prev.lyric = "R";
+                    prev.tone = 60;
+                }
+                var next = last.Next;
+                if (next != null && next.position > last.End) {
+                    next = UNote.Create();
+                    next.duration = next.position - last.End;
+                    next.lyric = "R";
+                    next.tone = 60;
+                }
                 var position = 0;
                 if (prev != null) {
                     writer.WriteLine($"[#PREV]");
@@ -376,7 +382,7 @@ namespace OpenUtau.Classic {
                     position = prev.End;
                 }
                 var note = first;
-                while (note != last.Next) {
+                while (note != null && note != last.Next) {
                     if (note.position < position) {
                         //Ignore current note if it is overlapped with previous note
                         note = note.Next;
@@ -432,7 +438,7 @@ namespace OpenUtau.Classic {
         }
 
         public static (List<UNote>, List<UNote>) ParsePlugin(
-            UProject project, UVoicePart part, UNote first, UNote last,
+            UProject project, UVoicePart part, UNote? first, UNote? last,
             List<UNote> sequence, string diffFile, string encoding = "shift_jis") {
             var toRemove = new List<UNote>();
             var toAdd = new List<UNote>();
@@ -478,7 +484,9 @@ namespace OpenUtau.Classic {
                     }
                 }
             }
-            int position = first.position;
+            // With no reference note (empty part or empty selection), new notes are
+            // laid out from the start of the part.
+            int position = first?.position ?? 0;
             foreach (var note in sequence) {
                 note.position = position;
                 position += note.duration;

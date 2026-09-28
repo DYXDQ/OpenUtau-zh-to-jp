@@ -263,15 +263,128 @@ PreUtterance=
                     // return empty text (invoke error)
                 }));
         }
+
+        /// <summary>
+        /// A plugin with "notes=all" in plugin.txt receives every note of the part,
+        /// even when only a part of them is selected.
+        /// </summary>
+        [Fact]
+        public async Task ExecuteAllNotesTest() {
+            // Given: "ka" (first) to "na" (last) selected, with notes before and after.
+            var given = ExecuteTestData.BasicUProject();
+            string? received = null;
+            var then = new Action<ReplaceNoteEventArgs>((args) => {
+                Assert.Fail("plugin received unchanged notes, should not replace");
+            });
+            var error = new Action<PluginErrorEventArgs>((args) => {
+                throw args.Exception;
+            });
+
+            // When
+            await new PluginRunner(PathManager.Inst, then, error)
+                .Execute(given.Project, given.Part, given.First, given.Last, new PluginStub((writer, text) => {
+                    received = text;
+                    // Write back unchanged, so no notes are replaced.
+                    writer.Write(text);
+                }, allNotes: true));
+
+            // Then: notes outside the selection are included too.
+            Assert.NotNull(received);
+            Assert.Contains("Lyric=a", received);   // note before the selection
+            Assert.Contains("Lyric=ka", received);
+            Assert.Contains("Lyric=ha", received);  // note after the selection
+            Assert.Contains("[#0005]", received);   // all six notes
+        }
+
+        /// <summary>
+        /// A plugin without "notes=all" receives only the selected notes, but falls back
+        /// to the whole part when nothing is selected.
+        /// </summary>
+        [Fact]
+        public async Task ExecuteNoSelectionTest() {
+            // Given
+            var given = ExecuteTestData.BasicUProject();
+            string? received = null;
+            var then = new Action<ReplaceNoteEventArgs>((args) => {
+                Assert.Fail("plugin received unchanged notes, should not replace");
+            });
+            var error = new Action<PluginErrorEventArgs>((args) => {
+                throw args.Exception;
+            });
+
+            // When nothing is selected (null first/last)
+            await new PluginRunner(PathManager.Inst, then, error)
+                .Execute(given.Project, given.Part, null, null, new PluginStub((writer, text) => {
+                    received = text;
+                    writer.Write(text);
+                }, allNotes: false));
+
+            // Then the whole part was sent, just like before.
+            Assert.NotNull(received);
+            Assert.Contains("Lyric=a", received);   // first note of the part
+            Assert.Contains("Lyric=ka", received);
+            Assert.Contains("Lyric=ha", received);  // last note of the part
+            Assert.Contains("[#0005]", received);   // all six notes
+        }
+
+        /// <summary>
+        /// An empty part is not a reason to skip the plugin: it still runs, so it can
+        /// add notes from scratch.
+        /// </summary>
+        [Fact]
+        public async Task ExecuteEmptyPartTest() {
+            // Given
+            var project = new UProject();
+            project.tracks.Add(new UTrack(project) {
+                TrackNo = 0,
+            });
+            var part = new UVoicePart() {
+                trackNo = 0,
+                position = 0,
+            };
+            project.parts.Add(part);
+            Ustx.AddDefaultExpressions(project);
+
+            ReplaceNoteEventArgs? result = null;
+            var error = new Action<PluginErrorEventArgs>((args) => {
+                throw args.Exception;
+            });
+
+            // When
+            await new PluginRunner(PathManager.Inst, (args) => result = args, error)
+                .Execute(project, part, null, null, new PluginStub((writer, text) => {
+                    Assert.Contains("[#SETTING]", text);
+                    writer.WriteLine("[#INSERT]");
+                    writer.WriteLine("Length=480");
+                    writer.WriteLine("Lyric=A");
+                    writer.WriteLine("[#INSERT]");
+                    writer.WriteLine("Length=240");
+                    writer.WriteLine("Lyric=me");
+                }));
+
+            // Then the inserted notes are added, laid out from the start of the part.
+            Assert.NotNull(result);
+            Assert.Empty(result!.ToRemove);
+            Assert.Equal(2, result.ToAdd.Count);
+            Assert.Equal(480, result.ToAdd[0].duration);
+            Assert.Equal("A", result.ToAdd[0].lyric);
+            Assert.Equal(0, result.ToAdd[0].position);
+            Assert.Equal(240, result.ToAdd[1].duration);
+            Assert.Equal("me", result.ToAdd[1].lyric);
+            Assert.Equal(480, result.ToAdd[1].position);
+        }
     }
 
     class PluginStub : IPlugin {
-        public PluginStub(Action<StreamWriter, string> action) {
+        public PluginStub(Action<StreamWriter, string> action, bool allNotes = false) {
             this.action = action;
+            AllNotes = allNotes;
         }
         private readonly Action<StreamWriter, string> action;
 
         public string Encoding => "shift_jis";
+
+        public bool AllNotes { get; }
 
         public async Task Run(string tempFile) {
             System.Text.Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);

@@ -45,11 +45,20 @@ namespace OpenUtau.Classic {
             OnError = onError;
         }
 
+        /// <summary>
+        /// Runs a legacy plugin against <paramref name="part"/>.
+        /// A plugin with "notes=all" in plugin.txt always receives every note of the part.
+        /// Otherwise only the selected notes (<paramref name="first"/> to
+        /// <paramref name="last"/>) are passed, falling back to the whole part when nothing
+        /// is selected. A plugin may also be run with no notes at all, for example to
+        /// generate notes on an empty track.
+        /// </summary>
         public async Task Execute(UProject project, UVoicePart part, UNote? first, UNote? last, IPlugin plugin) {
-            if (first == null || last == null) {
-                return;
-            }
             try {
+                if (plugin.AllNotes || first == null || last == null) {
+                    first = part.notes.FirstOrDefault();
+                    last = part.notes.LastOrDefault();
+                }
                 var tempFile = Path.Combine(PathManager.CachePath, "temp.tmp");
                 var sequence = Ust.WritePlugin(project, part, first, last, tempFile, encoding: plugin.Encoding);
                 byte[]? beforeHash = HashFile(tempFile);

@@ -7,7 +7,7 @@ namespace OpenUtau.Classic {
     public class Plugin : IPlugin {
         public string Name;
         public string Executable;
-        public bool AllNotes;
+        public bool AllNotes { get; set; }
         public bool UseShell;
         private string encoding = "shift_jis";
         public string Shortcut;

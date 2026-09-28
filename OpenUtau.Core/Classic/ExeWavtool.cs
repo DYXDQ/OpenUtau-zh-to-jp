@@ -20,7 +20,6 @@ namespace OpenUtau.Classic {
         readonly string name;
         readonly string winePath;
         readonly bool useWine;
-        readonly bool isNative;
         private Encoding osEncoding;
 
         public ExeWavtool(string filePath, string basePath) {
@@ -30,7 +29,6 @@ namespace OpenUtau.Classic {
             string ext = Path.GetExtension(filePath).ToLower();
             winePath = Preferences.Default.WinePath;
             useWine = !OS.IsWindows() && !string.IsNullOrEmpty(winePath) && (ext == ".exe" || ext == ".bat");
-            isNative = !OS.IsWindows() && !useWine;
         }
 
         public float[] Concatenate(List<ResamplerItem> resamplerItems, string tempPath, CancellationTokenSource cancellation) {
@@ -46,118 +44,6 @@ namespace OpenUtau.Classic {
                     }
                 }
             }
-
-            if (isNative) {
-                return ConcatenateNative(resamplerItems, tempPath, cancellation);
-            } else {
-                return ConcatenateWine(resamplerItems, tempPath, cancellation);
-            }
-        }
-
-        // ── Native Linux path (.sh wrapper) ────────────────────────────
-
-        float[] ConcatenateNative(List<ResamplerItem> resamplerItems, string tempPath, CancellationTokenSource cancellation) {
-            if (cancellation.IsCancellationRequested) return null;
-
-            PrepareNativeHelper();
-            string shPath = Path.Combine(PathManager.Inst.CachePath, "temp.sh");
-            lock (tempBatLock) {
-                using (var stream = File.Open(shPath, FileMode.Create)) {
-                    UTF8Encoding noBomEncoding = new UTF8Encoding(false);
-                    using (var writer = new StreamWriter(stream, noBomEncoding)) {
-                        writer.WriteLine("#!/bin/bash");
-                        writer.WriteLine("set -euo pipefail");
-                        WriteNativeSetUp(writer, resamplerItems, tempPath);
-                        for (var i = 0; i < resamplerItems.Count; i++) {
-                            WriteNativeItem(writer, resamplerItems[i], i, resamplerItems.Count);
-                        }
-                        WriteNativeTearDown(writer);
-                    }
-                }
-
-                ProcessRunner.Run("/bin/bash", shPath, Log.Logger,
-                    workDir: PathManager.Inst.CachePath, timeoutMs: 5 * 60 * 1000);
-            }
-            return ReadResultWav(tempPath);
-        }
-
-        void PrepareNativeHelper() {
-            string tempHelper = Path.Join(PathManager.Inst.CachePath, "temp_helper.sh");
-            lock (Renderers.GetCacheLock(tempHelper)) {
-                if (!File.Exists(tempHelper)) {
-                    using (var stream = File.Open(tempHelper, FileMode.Create)) {
-                        UTF8Encoding noBomEncoding = new UTF8Encoding(false);
-                        using (var writer = new StreamWriter(stream, noBomEncoding)) {
-                            WriteNativeHelper(writer);
-                        }
-                    }
-                }
-            }
-        }
-
-        void WriteNativeHelper(StreamWriter writer) {
-            // temp_helper.sh: called per note to run resampler → pipe to wavtool
-            writer.WriteLine("#!/bin/bash");
-            writer.WriteLine("# $1=input  $2=tone  $3=dur  $4=preutter  $5=offset  $6=durReq  $7=cons  $8=cutoff  $9=index");
-            writer.WriteLine("input=\"$1\"; tone=\"$2\"; dur=\"$3\"; preutter=\"$4\"; offset=\"$5\"");
-            writer.WriteLine("durReq=\"$6\"; cons=\"$7\"; cutoff=\"$8\"; index=\"$9\"");
-            writer.WriteLine("# Re-encode pitches as base64 (matching UTAU expectations)");
-            writer.WriteLine("\"${resamp}\" \"${input}\" \"${tempfile}\" \"${tone}\" \"${vel}\" \"${flag}\" \"${offset}\" \"${durReq}\" \"${cons}\" \"${cutoff}\" \"${vol}\" \"${mod}\" \"!${tempo}\" \"${params_pitch}\"");
-            writer.WriteLine("\"${tool}\" \"${output}\" \"${tempfile}\" \"${stp}\" \"${dur}\" \"${env}\"");
-        }
-
-        void WriteNativeSetUp(StreamWriter writer, List<ResamplerItem> resamplerItems, string tempPath) {
-            writer.WriteLine($"tempo={resamplerItems[0].tempo}");
-            writer.WriteLine("samples=44100");
-            writer.WriteLine($"oto=\"{PathManager.Inst.CachePath}\"");
-            writer.WriteLine($"tool=\"{filePath}\"");
-            string tempFile = Path.GetRelativePath(PathManager.Inst.CachePath, tempPath);
-            writer.WriteLine($"output=\"{tempFile}\"");
-            writer.WriteLine($"helper=\"{Path.Combine(PathManager.Inst.CachePath, "temp_helper.sh")}\"");
-            writer.WriteLine($"cachedir=\"{PathManager.Inst.CachePath}\"");
-            writer.WriteLine("flag=\"\"");
-            writer.WriteLine("env=\"0 5 35 0 100 100 0\"");
-            writer.WriteLine("stp=0");
-            writer.WriteLine();
-            writer.WriteLine($"rm -f \"${{output}}\"");
-            writer.WriteLine($"mkdir -p \"${{cachedir}}\"");
-            writer.WriteLine();
-        }
-
-        void WriteNativeItem(StreamWriter writer, ResamplerItem item, int index, int total) {
-            writer.WriteLine($"resamp=\"{item.resampler.FilePath}\"");
-            writer.WriteLine($"vol={item.volume}");
-            writer.WriteLine($"mod={item.modulation}");
-            writer.WriteLine($"params_pitch={Base64.Base64EncodeInt12(item.pitches)}");
-            writer.WriteLine($"flag=\"{EscapeFlags(item.GetFlagsString())}\"");
-            writer.WriteLine($"env=\"{GetEnvelope(item)}\"");
-            writer.WriteLine($"stp={item.skipOver}");
-            writer.WriteLine($"vel={item.velocity}");
-            string relOutputFile = Path.GetRelativePath(PathManager.Inst.CachePath, item.outputFile);
-            writer.WriteLine($"tempfile=\"${{cachedir}}/{relOutputFile}\"");
-            string toneName = MusicMath.GetToneName(item.tone);
-            string dur = $"{item.phone.duration:G999}@{item.phone.adjustedTempo:G999}{(item.durCorrection >= 0 ? "+" : "")}{item.durCorrection}";
-            string relInputTemp = Path.GetRelativePath(PathManager.Inst.CachePath, item.inputTemp);
-            writer.WriteLine($"echo \"{MakeProgressBar(index + 1, total)}\"");
-            if (item.phone.direct) {
-                writer.WriteLine($"\"${{tool}}\" \"${{output}}\" \"${{oto}}/{relInputTemp}\" {item.offset} {item.phone.durationMs:F1} ${{env}}");
-            } else {
-                writer.WriteLine($"bash \"${{helper}}\" \"${{oto}}/{relInputTemp}\" {toneName} {dur} {item.preutter} {item.offset} {item.durRequired} {item.consonant} {item.cutoff} {index}");
-            }
-        }
-
-        void WriteNativeTearDown(StreamWriter writer) {
-            writer.WriteLine("# Native wavtool: output is written directly");
-            writer.WriteLine("if [ ! -f \"${output}\" ]; then");
-            writer.WriteLine("  echo \"Warning: output file not found: ${output}\"");
-            writer.WriteLine("fi");
-        }
-
-        // ── Wine / Windows path (.bat wrapper) ─────────────────────────
-
-        float[] ConcatenateWine(List<ResamplerItem> resamplerItems, string tempPath, CancellationTokenSource cancellation) {
-            if (cancellation.IsCancellationRequested) return null;
-
             PrepareHelper();
             string batPath = Path.Combine(PathManager.Inst.CachePath, "temp.bat");
             lock (tempBatLock) {
@@ -177,8 +63,14 @@ namespace OpenUtau.Classic {
                 } else {
                     ProcessRunner.Run(batPath, "", Log.Logger, workDir: PathManager.Inst.CachePath, timeoutMs: 5 * 60 * 1000);
                 }
+
             }
-            return ReadResultWav(tempPath);
+            if (string.IsNullOrEmpty(tempPath) || File.Exists(tempPath)) {
+                using (var wavStream = Core.Format.Wave.OpenFile(tempPath)) {
+                    return Core.Format.Wave.GetSamples(wavStream.ToSampleProvider().ToMono(1, 0));
+                }
+            }
+            return new float[0];
         }
 
         void PrepareHelper() {
@@ -247,26 +139,6 @@ namespace OpenUtau.Classic {
             }
         }
 
-        void WriteTearDown(StreamWriter writer) {
-            writer.WriteLine("@if not exist \"%output%.whd\" goto E");
-            writer.WriteLine("@if not exist \"%output%.dat\" goto E");
-            writer.WriteLine("copy /Y \"%output%.whd\" /B + \"%output%.dat\" /B \"%output%\"");
-            writer.WriteLine("del \"%output%.whd\"");
-            writer.WriteLine("del \"%output%.dat\"");
-            writer.WriteLine(":E");
-        }
-
-        // ── Common helpers ──────────────────────────────────────────────
-
-        float[] ReadResultWav(string tempPath) {
-            if (string.IsNullOrEmpty(tempPath) || File.Exists(tempPath)) {
-                using (var wavStream = Core.Format.Wave.OpenFile(tempPath)) {
-                    return Core.Format.Wave.GetSamples(wavStream.ToSampleProvider().ToMono(1, 0));
-                }
-            }
-            return new float[0];
-        }
-
         string MakeProgressBar(int index, int total) {
             const int kWidth = 40;
             int fill = index * kWidth / total;
@@ -314,12 +186,19 @@ namespace OpenUtau.Classic {
             return sb.ToString();
         }
 
-        // ── Wine path conversion ────────────────────────────────────────
+        void WriteTearDown(StreamWriter writer) {
+            writer.WriteLine("@if not exist \"%output%.whd\" goto E");
+            writer.WriteLine("@if not exist \"%output%.dat\" goto E");
+            writer.WriteLine("copy /Y \"%output%.whd\" /B + \"%output%.dat\" /B \"%output%\"");
+            writer.WriteLine("del \"%output%.whd\"");
+            writer.WriteLine("del \"%output%.dat\"");
+            writer.WriteLine(":E");
+        }
 
         string ConvertIfNeeded(string path) {
             if (!OS.IsWindows()) return ConvertToWindowsPath(path);
             else return path;
-        }
+        } 
 
         string ConvertToWindowsPath (string linuxPath) {
             List<char> path = new List<char>(linuxPath.ToCharArray());
@@ -346,7 +225,7 @@ namespace OpenUtau.Classic {
             if (OS.IsWindows() || !File.Exists(filePath)) {
                 return;
             }
-            int mode = (7 << 6) | (5 << 3) | 5; // 755
+            int mode = (7 << 6) | (5 << 3) | 5;
             chmod(filePath, mode);
         }
 

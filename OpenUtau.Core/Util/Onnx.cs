@@ -22,39 +22,38 @@ namespace OpenUtau.Core {
     }
 
     public class Onnx {
-        private static Dictionary<int, OrtEpDevice> devices = initializeDevices();
+        private static readonly Dictionary<int, OrtEpDevice> devices = initializeDevices();
 
         private static Dictionary<int, OrtEpDevice> initializeDevices() {
             var env = OrtEnv.Instance();
             var ortDevices = env.GetEpDevices();
 
             return ortDevices
-                .Where(device => {
-                    var ep = device.EpName.ToLower();
-                    return ep.Contains("dml") || ep.Contains("cuda");
-                })
+                .Where(device => device.EpName.ToLower().Contains("dml"))
                 .Select((device, index) => new { index, device })
                 .ToDictionary(x => x.index, x => x.device);
         }
 
         public static List<string> getRunnerOptions() {
-            var options = new List<string> { "CPU" };
             if (OS.IsWindows()) {
-                options.Add("DirectML");
+                return new List<string> {
+                "CPU",
+                "DirectML"
+                };
             } else if (OS.IsMacOS()) {
-                options.Add("CoreML");
+                return new List<string> {
+                "CPU",
+                "CoreML"
+                };
             } else if (OS.IsAndroid()) {
-                options.Add("NNAPI");
-            } else {
-                // Linux: offer CUDA if the provider is available
-                try {
-                    var providers = OrtEnv.Instance().GetAvailableProviders();
-                    if (providers.Any(p => p.Contains("CUDA"))) {
-                        options.Add("CUDA");
-                    }
-                } catch { }
+                return new List<string> {
+                "CPU",
+                "NNAPI"
+                };
             }
-            return options;
+            return new List<string> {
+                "CPU"
+            };
         }
 
         public static List<GpuInfo> getGpuInfo() {
@@ -68,11 +67,7 @@ namespace OpenUtau.Core {
             var ortDevices = env.GetEpDevices();
 
             var i = 0;
-            // Enumerate DML (Windows) and CUDA (Linux) GPU devices
-            foreach (var device in ortDevices.Where(device => {
-                var ep = device.EpName.ToLower();
-                return ep.Contains("dml") || ep.Contains("cuda");
-            })) {
+            foreach (var device in ortDevices.Where(device => device.EpName.ToLower().Contains("dml"))) {
                 var description = "";
                 foreach (var item in device.HardwareDevice.Metadata.Entries) {
                     if (item.Key.ToLower() == "description") {
@@ -89,21 +84,6 @@ namespace OpenUtau.Core {
                     description = description
                 });
             }
-
-            // If no devices found via GetEpDevices but CUDA provider is available,
-            // create a generic CUDA GPU entry (CUDA EP doesn't always expose devices)
-            if (gpuList.Count == 0 && !OS.IsMacOS() && !OS.IsAndroid()) {
-                try {
-                    var providers = env.GetAvailableProviders();
-                    if (providers.Any(p => p.Contains("CUDA"))) {
-                        gpuList.Add(new GpuInfo {
-                            deviceId = 0,
-                            description = "NVIDIA CUDA GPU"
-                        });
-                    }
-                } catch { }
-            }
-
             if (gpuList.Count == 0) {
                 gpuList.Add(new GpuInfo {
                     deviceId = 0,
@@ -130,9 +110,6 @@ namespace OpenUtau.Core {
                         new List<OrtEpDevice> { d },
                         new Dictionary<string, string> { }
                      );
-                    break;
-                case "CUDA":
-                    options.AppendExecutionProvider_CUDA(Preferences.Default.OnnxGpu);
                     break;
                 case "CoreML":
                     // Note: MLProgram format has stricter validation and may fail with complex DiffSinger models

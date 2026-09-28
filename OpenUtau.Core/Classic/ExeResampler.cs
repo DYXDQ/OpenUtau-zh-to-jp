@@ -22,7 +22,6 @@ namespace OpenUtau.Classic {
         readonly bool _isLegalPlugin = false;
         readonly string winePath;
         readonly bool useWine;
-        readonly bool isNative;
 
 
         public ResamplerManifest LoadManifest() {
@@ -60,34 +59,16 @@ namespace OpenUtau.Classic {
             File.WriteAllLines(moreConfigPath, lines);
         }
 
-        /// <summary>Checks whether a file is a native Linux ELF binary by reading its magic bytes.</summary>
-        private static bool IsElfBinary(string filePath) {
-            try {
-                using var fs = File.OpenRead(filePath);
-                if (fs.Length < 4) return false;
-                Span<byte> magic = stackalloc byte[4];
-                fs.ReadExactly(magic);
-                // ELF magic: 0x7F 'E' 'L' 'F'
-                return magic[0] == 0x7F && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F';
-            } catch {
-                return false;
-            }
-        }
-
         public ExeResampler(string filePath, string basePath) {
             if (File.Exists(filePath)) {
                 FilePath = filePath;
                 _name = Path.GetRelativePath(basePath, filePath);
                 _isLegalPlugin = true;
             }
-            // Detect execution mode:
-            //  - Windows: run .exe/.bat natively
-            //  - Linux + Wine: run .exe/.bat via Wine
-            //  - Linux native: run .sh scripts or ELF binaries directly
+            //Check if should use wine
             string ext = Path.GetExtension(filePath).ToLower();
             winePath = Preferences.Default.WinePath;
             useWine = !OS.IsWindows() && !string.IsNullOrEmpty(winePath) && (ext == ".exe" || ext == ".bat");
-            isNative = !OS.IsWindows() && !useWine && (ext == ".sh" || string.IsNullOrEmpty(ext) || IsElfBinary(filePath));
             //Load Resampler Manifest
             Manifest = LoadManifest();
             //Make moresampler happy
@@ -136,7 +117,7 @@ namespace OpenUtau.Classic {
             if (OS.IsWindows() || !File.Exists(FilePath)) {
                 return;
             }
-            int mode = (7 << 6) | (5 << 3) | 5; // 755
+            int mode = (7 << 6) | (5 << 3) | 5;
             chmod(FilePath, mode);
         }
 
